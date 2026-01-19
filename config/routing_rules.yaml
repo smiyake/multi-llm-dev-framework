@@ -1,72 +1,103 @@
-# Policy Router Rules
+# Policy Router Rules - GPT-OSS-20B Unified (16GB VRAM Environment)
 # Define task-to-model routing logic
+
+# 2-Stage Strategy:
+# Stage 1 (Now - 16GB): GPT-OSS-20B (Q4) unified for all local tasks
+# Stage 2 (Future - 96GB): Add Qwen3-32B for Japanese sentiment analysis
 
 # Default fallback chain
 fallback_chain:
-  - vllm-qwen-14b
-  - llama-cpp-7b
-  - claude-sonnet
+  - gpt-oss-20b-q4     # Primary: 16GB optimized
+  - claude-sonnet      # Fallback: Cloud API
 
 # Task type routing rules
 rules:
-  # Low-latency tasks -> llama.cpp
+  # Sentiment analysis -> GPT-OSS-20B (Q4)
   - task_type: sentiment
-    model: llama-cpp-7b
-    endpoint: direct  # bypass LiteLLM for lowest latency
-    reason: "Low latency, high throughput"
-
-  - task_type: log_summary
-    model: llama-cpp-7b
+    model: gpt-oss-20b-q4
     endpoint: direct
-    reason: "Bulk processing, low cost"
+    reason: "Unified local model for 16GB VRAM"
+    output_schema:
+      - sentiment      # positive/negative/neutral
+      - confidence     # 0.0-1.0
+      - rationale      # brief explanation
+      - model_id       # for A/B testing
 
-  # Code generation -> vLLM
+  # Log summary -> GPT-OSS-20B (Q4)
+  - task_type: log_summary
+    model: gpt-oss-20b-q4
+    endpoint: direct
+    reason: "Bulk processing, consistent quality"
+
+  # Code generation -> GPT-OSS-20B (Q4)
   - task_type: code_gen
-    model: vllm-qwen-14b
-    endpoint: litellm
-    reason: "High throughput, good quality"
+    model: gpt-oss-20b-q4
+    endpoint: direct
+    reason: "Local code generation, no API cost"
 
+  # Document generation -> GPT-OSS-20B (Q4)
   - task_type: document
-    model: vllm-qwen-14b
-    endpoint: litellm
-    reason: "Pattern-based generation"
+    model: gpt-oss-20b-q4
+    endpoint: direct
+    reason: "Pattern-based generation, local processing"
 
-  # High-quality tasks -> Claude
+  # Analysis tasks -> GPT-OSS-20B (Q4)
+  - task_type: analysis
+    model: gpt-oss-20b-q4
+    endpoint: direct
+    reason: "Data analysis, local inference"
+
+  # Agent support (Cline, Aider, OpenHands) -> GPT-OSS-20B (Q4)
+  - task_type: agent_support
+    model: gpt-oss-20b-q4
+    endpoint: direct
+    reason: "Coding agent backend, high throughput"
+
+  # High-quality review -> Claude (Cloud)
   - task_type: code_review
     model: claude-sonnet
     endpoint: litellm
-    reason: "High quality review"
+    reason: "High quality review requires advanced reasoning"
 
+  # Architecture decisions -> Claude (Cloud)
   - task_type: architecture
     model: claude-sonnet
     endpoint: litellm
     reason: "Complex reasoning required"
 
+  # Security audit -> Claude (Cloud)
   - task_type: security_audit
     model: claude-sonnet
     endpoint: litellm
-    reason: "Critical decision making"
+    reason: "Critical decision making, high stakes"
 
 # Resource-based rules
 resource_rules:
-  # When GPU VRAM < 2GB, fallback to CPU
-  - condition: "gpu_free_mb < 2000"
-    action: "use_llama_cpp"
-    reason: "GPU overloaded, fallback to CPU"
+  # When GPU VRAM < 4GB, use quantized model
+  - condition: "gpu_free_mb < 4000"
+    action: "use_q4_quantized"
+    reason: "GPU memory limited, use Q4 quantization"
 
-  # Long context -> vLLM
-  - condition: "max_tokens > 4096"
-    action: "use_vllm"
-    reason: "Long context benefits from vLLM"
+  # When GPU unavailable, fallback to cloud
+  - condition: "gpu_available == false"
+    action: "use_cloud"
+    reason: "No GPU, fallback to Claude API"
 
 # Cost optimization
 cost_rules:
-  # Batch tasks -> local models
-  - condition: "batch_size > 10"
+  # Batch tasks -> always local
+  - condition: "batch_size > 5"
     action: "use_local"
-    reason: "Cost optimization for batch"
+    reason: "Cost optimization for batch processing"
 
   # Night time -> aggressive local usage
   - condition: "hour >= 22 or hour <= 6"
     action: "prefer_local"
-    reason: "Night batch processing"
+    reason: "Night batch processing, no latency requirements"
+
+# Future expansion (96GB VRAM)
+# future_rules:
+#   - task_type: sentiment_japanese
+#     model: qwen3-32b
+#     endpoint: direct
+#     reason: "Japanese-optimized sentiment analysis"
