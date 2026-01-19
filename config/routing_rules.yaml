@@ -1,0 +1,72 @@
+# Policy Router Rules
+# Define task-to-model routing logic
+
+# Default fallback chain
+fallback_chain:
+  - vllm-qwen-14b
+  - llama-cpp-7b
+  - claude-sonnet
+
+# Task type routing rules
+rules:
+  # Low-latency tasks -> llama.cpp
+  - task_type: sentiment
+    model: llama-cpp-7b
+    endpoint: direct  # bypass LiteLLM for lowest latency
+    reason: "Low latency, high throughput"
+
+  - task_type: log_summary
+    model: llama-cpp-7b
+    endpoint: direct
+    reason: "Bulk processing, low cost"
+
+  # Code generation -> vLLM
+  - task_type: code_gen
+    model: vllm-qwen-14b
+    endpoint: litellm
+    reason: "High throughput, good quality"
+
+  - task_type: document
+    model: vllm-qwen-14b
+    endpoint: litellm
+    reason: "Pattern-based generation"
+
+  # High-quality tasks -> Claude
+  - task_type: code_review
+    model: claude-sonnet
+    endpoint: litellm
+    reason: "High quality review"
+
+  - task_type: architecture
+    model: claude-sonnet
+    endpoint: litellm
+    reason: "Complex reasoning required"
+
+  - task_type: security_audit
+    model: claude-sonnet
+    endpoint: litellm
+    reason: "Critical decision making"
+
+# Resource-based rules
+resource_rules:
+  # When GPU VRAM < 2GB, fallback to CPU
+  - condition: "gpu_free_mb < 2000"
+    action: "use_llama_cpp"
+    reason: "GPU overloaded, fallback to CPU"
+
+  # Long context -> vLLM
+  - condition: "max_tokens > 4096"
+    action: "use_vllm"
+    reason: "Long context benefits from vLLM"
+
+# Cost optimization
+cost_rules:
+  # Batch tasks -> local models
+  - condition: "batch_size > 10"
+    action: "use_local"
+    reason: "Cost optimization for batch"
+
+  # Night time -> aggressive local usage
+  - condition: "hour >= 22 or hour <= 6"
+    action: "prefer_local"
+    reason: "Night batch processing"

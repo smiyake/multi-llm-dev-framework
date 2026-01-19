@@ -1,0 +1,43 @@
+# LiteLLM Configuration Template
+# Copy to litellm.yaml and edit as needed
+
+model_list:
+  # vLLM (GPU high-throughput)
+  - model_name: vllm-qwen-14b
+    litellm_params:
+      model: openai/qwen2.5-14b-instruct
+      api_base: http://127.0.0.1:8000/v1
+      api_key: "EMPTY"
+
+  # llama.cpp (CPU/hybrid, low-latency)
+  - model_name: llama-cpp-7b
+    litellm_params:
+      model: openai/qwen2.5-7b-instruct
+      api_base: http://127.0.0.1:8080/v1
+      api_key: "EMPTY"
+
+  # Claude API (high precision)
+  - model_name: claude-sonnet
+    litellm_params:
+      model: anthropic/claude-sonnet-4-20250514
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-haiku
+    litellm_params:
+      model: anthropic/claude-3-5-haiku-20241022
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # OpenAI (optional)
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+router_settings:
+  routing_strategy: least_busy
+  num_retries: 2
+  retry_after: 5
+  allowed_fails: 3
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

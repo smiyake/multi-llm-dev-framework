@@ -1,0 +1,31 @@
+# Multi-LLM Development Framework - Requirements
+
+# Core
+fastapi>=0.104.0
+uvicorn>=0.24.0
+pydantic>=2.0.0
+httpx>=0.25.0
+pyyaml>=6.0
+
+# LiteLLM
+litellm>=1.20.0
+
+# GPU Monitoring (optional)
+pynvml>=11.5.0
+
+# Logging
+loguru>=0.7.0
+
+# CLI
+typer>=0.9.0
+rich>=13.0.0
+
+# Development
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
+ruff>=0.1.0
+mypy>=1.5.0
+
+# Optional: Agent integrations
+# aider-chat>=0.50.0  # Uncomment if using Aider
