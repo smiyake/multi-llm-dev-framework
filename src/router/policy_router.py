@@ -21,6 +21,7 @@ Configuration:
     Config file (ports.yaml):
         Searched in: current dir, ./config/, PORTS_CONFIG_PATH env var
 """
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Literal, List, Tuple
@@ -50,7 +51,16 @@ except Exception:
     GPU_HANDLE = None
     logger.warning("NVIDIA GPU monitoring not available")
 
-app = FastAPI(title="Policy Router", version="2.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup/shutdown events."""
+    # Startup
+    await _register_with_port_registry()
+    yield
+    # Shutdown (if needed in the future)
+
+
+app = FastAPI(title="Policy Router", version="2.1.0", lifespan=lifespan)
 
 # Configuration paths (relative to this package)
 _PACKAGE_ROOT = Path(__file__).parent.parent.parent
@@ -64,8 +74,11 @@ def find_ports_config() -> Optional[Path]:
     """Find ports.yaml config file in standard locations."""
     # 1. Environment variable (highest priority)
     env_path = os.environ.get("PORTS_CONFIG_PATH")
-    if env_path and Path(env_path).exists():
-        return Path(env_path)
+    if env_path:
+        path = Path(env_path)
+        if path.exists():
+            return path
+        logger.warning(f"PORTS_CONFIG_PATH set to '{env_path}' but file not found, searching defaults")
 
     # 2. Search paths (relative to cwd and package)
     search_paths = [
@@ -81,15 +94,25 @@ def find_ports_config() -> Optional[Path]:
     return None
 
 
+# Cache for ports config to avoid re-reading file multiple times
+_ports_config_cache: Optional[dict] = None
+
+
 def load_ports_config() -> dict:
-    """Load port configuration from ports.yaml."""
+    """Load port configuration from ports.yaml (cached)."""
+    global _ports_config_cache
+    if _ports_config_cache is not None:
+        return _ports_config_cache
+
     config_path = find_ports_config()
     if config_path:
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         logger.info(f"Loaded ports config from {config_path}")
+        _ports_config_cache = config
         return config
 
     logger.debug("No ports.yaml found, using defaults/env vars")
+    _ports_config_cache = {}
     return {}
 
 
@@ -458,9 +481,8 @@ def get_server_config() -> Tuple[str, int]:
     )
 
 
-@app.on_event("startup")
-async def register_with_port_registry():
-    """Register Policy Router with port-registry on startup (if available)."""
+async def _register_with_port_registry():
+    """Register Policy Router with port-registry (if available)."""
     if not PORT_REGISTRY_AVAILABLE:
         return
 
