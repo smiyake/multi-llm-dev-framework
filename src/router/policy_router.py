@@ -31,7 +31,6 @@ from pathlib import Path
 from loguru import logger
 from datetime import datetime
 import json
-import sys
 
 # Try to import port-registry (optional dependency)
 try:
