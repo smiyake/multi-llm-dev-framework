@@ -8,16 +8,38 @@ Routes tasks to appropriate models based on:
 
 Stage 1 (16GB VRAM): GPT-OSS-20B (Q4) unified for all local tasks
 Stage 2 (96GB VRAM): Add Qwen3-32B for Japanese sentiment
+
+Configuration:
+    Environment variables (highest priority):
+        POLICY_ROUTER_PORT: Port to listen on (default: 5000)
+        POLICY_ROUTER_HOST: Host to bind to (default: 0.0.0.0)
+        LITELLM_URL: LiteLLM endpoint (default: http://127.0.0.1:4000/v1/chat/completions)
+        OLLAMA_URL: Ollama endpoint (default: http://127.0.0.1:11434/v1/chat/completions)
+        VLLM_URL: vLLM endpoint (default: http://127.0.0.1:8000/v1/chat/completions)
+        PORTS_CONFIG_PATH: Path to ports.yaml config file
+
+    Config file (ports.yaml):
+        Searched in: current dir, ./config/, PORTS_CONFIG_PATH env var
 """
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional, Literal, List
+from typing import Optional, Literal, List, Tuple
 import httpx
+import os
 import yaml
 from pathlib import Path
 from loguru import logger
 from datetime import datetime
 import json
+import sys
+
+# Try to import port-registry (optional dependency)
+try:
+    from port_registry import ServiceRegistry
+    PORT_REGISTRY_AVAILABLE = True
+except ImportError:
+    PORT_REGISTRY_AVAILABLE = False
+    logger.debug("port-registry not installed, using config file only")
 
 try:
     import pynvml
@@ -29,21 +51,90 @@ except Exception:
     GPU_HANDLE = None
     logger.warning("NVIDIA GPU monitoring not available")
 
-app = FastAPI(title="Policy Router", version="2.0.0")
+app = FastAPI(title="Policy Router", version="2.1.0")
 
-# Configuration
-CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "routing_rules.yaml"
-PROMPT_CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "prompts.yaml"
-LOG_DIR = Path(__file__).parent.parent.parent / "logs" / "routing"
+# Configuration paths (relative to this package)
+_PACKAGE_ROOT = Path(__file__).parent.parent.parent
+CONFIG_PATH = _PACKAGE_ROOT / "config" / "routing_rules.yaml"
+PROMPT_CONFIG_PATH = _PACKAGE_ROOT / "config" / "prompts.yaml"
+LOG_DIR = _PACKAGE_ROOT / "logs" / "routing"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-# Endpoints
-LITELLM_URL = "http://127.0.0.1:4000/v1/chat/completions"
-GPT_OSS_DIRECT = "http://127.0.0.1:8080/v1/chat/completions"  # llama.cpp server
-VLLM_DIRECT = "http://127.0.0.1:8000/v1/chat/completions"
 
-# Default model for 16GB environment
-DEFAULT_MODEL = "gpt-oss-20b-q4"
+def find_ports_config() -> Optional[Path]:
+    """Find ports.yaml config file in standard locations."""
+    # 1. Environment variable (highest priority)
+    env_path = os.environ.get("PORTS_CONFIG_PATH")
+    if env_path and Path(env_path).exists():
+        return Path(env_path)
+
+    # 2. Search paths (relative to cwd and package)
+    search_paths = [
+        Path.cwd() / "config" / "ports.yaml",
+        Path.cwd() / "ports.yaml",
+        _PACKAGE_ROOT / "config" / "ports.yaml",
+    ]
+
+    for path in search_paths:
+        if path.exists():
+            return path
+
+    return None
+
+
+def load_ports_config() -> dict:
+    """Load port configuration from ports.yaml."""
+    config_path = find_ports_config()
+    if config_path:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        logger.info(f"Loaded ports config from {config_path}")
+        return config
+
+    logger.debug("No ports.yaml found, using defaults/env vars")
+    return {}
+
+
+def get_endpoint(service_name: str, env_var: str, default_port: int, path: str = "/v1/chat/completions") -> str:
+    """Get endpoint URL from environment variable or config.
+
+    Priority: environment variable > ports.yaml > default
+    """
+    # 1. Environment variable (highest priority)
+    env_url = os.environ.get(env_var)
+    if env_url:
+        return env_url
+
+    # 2. Config file
+    config = load_ports_config()
+    services = config.get("services", {})
+    service = services.get(service_name, {})
+
+    if service:
+        host = service.get("host", "127.0.0.1")
+        port = service.get("port", default_port)
+        return f"http://{host}:{port}{path}"
+
+    # 3. Default
+    return f"http://127.0.0.1:{default_port}{path}"
+
+
+# Load endpoints (environment variables > config > defaults)
+LITELLM_URL = get_endpoint("litellm", "LITELLM_URL", 4000)
+OLLAMA_URL = get_endpoint("ollama", "OLLAMA_URL", 11434)
+GPT_OSS_DIRECT = OLLAMA_URL  # Redirect to Ollama
+VLLM_DIRECT = get_endpoint("vllm", "VLLM_URL", 8000)
+
+# Get default model from config or environment
+_ports_config = load_ports_config()
+_models_config = _ports_config.get("models", {})
+_default_backend = _ports_config.get("default_backend", "ollama")
+DEFAULT_MODEL = os.environ.get(
+    "DEFAULT_MODEL",
+    _models_config.get("qwen3-coder", {}).get("model_name", "qwen3-coder:30b")
+)
+
+logger.info(f"Endpoints configured: LiteLLM={LITELLM_URL}, Ollama={OLLAMA_URL}, vLLM={VLLM_DIRECT}")
+logger.info(f"Default model: {DEFAULT_MODEL} (backend: {_default_backend})")
 
 
 class Message(BaseModel):
@@ -346,6 +437,56 @@ async def get_routing_stats():
     return stats
 
 
+def get_server_config() -> Tuple[str, int]:
+    """Get server host and port from environment or config.
+
+    Priority: environment variable > ports.yaml > default
+    """
+    # Environment variables (highest priority)
+    host = os.environ.get("POLICY_ROUTER_HOST")
+    port = os.environ.get("POLICY_ROUTER_PORT")
+
+    if host and port:
+        return host, int(port)
+
+    # Config file
+    config = load_ports_config()
+    service_config = config.get("services", {}).get("policy_router", {})
+
+    return (
+        host or service_config.get("host", "0.0.0.0"),
+        int(port) if port else service_config.get("port", 5000)
+    )
+
+
+@app.on_event("startup")
+async def register_with_port_registry():
+    """Register Policy Router with port-registry on startup (if available)."""
+    if not PORT_REGISTRY_AVAILABLE:
+        return
+
+    try:
+        # Use state_dir from environment or default
+        state_dir = Path(os.environ.get(
+            "PORT_REGISTRY_STATE_DIR",
+            _PACKAGE_ROOT / "config" / "ports"
+        ))
+        state_dir.mkdir(parents=True, exist_ok=True)
+
+        registry = ServiceRegistry(
+            service_name="policy-router",
+            state_dir=state_dir,
+            cmdline_patterns=["policy_router", "uvicorn"],
+        )
+        host, port = get_server_config()
+        registry.on_start(port=port, host=host)
+        logger.info(f"Registered with port-registry: {host}:{port}")
+    except Exception as e:
+        logger.warning(f"Failed to register with port-registry: {e}")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5000)
+    host, port = get_server_config()
+    logger.info(f"Starting Policy Router on {host}:{port}")
+    uvicorn.run(app, host=host, port=port)
